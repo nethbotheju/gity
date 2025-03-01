@@ -4,6 +4,36 @@ use std::error::Error;
 use std::path::Path;
 use std::fs;
 
+fn add_directory_recursively(dir_path: &str, index: &mut git2::Index) -> Result<(), Box<dyn Error>> {
+    let path = Path::new(dir_path);
+    
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        // Skip .git directory and hidden files/directories
+        let path_str = path.to_str().unwrap_or("");
+        if path_str.contains("/.git/") || path_str.contains("\\.git\\") || 
+           path.file_name().and_then(|s| s.to_str()).map_or(false, |s| s.starts_with(".")) {
+            continue;
+        }
+        
+        if path.is_dir() {
+            // Recursively add files from subdirectory
+            add_directory_recursively(path_str, index)?;
+        } else if path.is_file() {
+            // Strip the leading ./ if present
+            let clean_path = path.strip_prefix("./").unwrap_or(&path);
+            match index.add_path(clean_path) {
+                Ok(_) => println!("Added file: {}", clean_path.display()),
+                Err(e) => eprintln!("Failed to add {}: {}", clean_path.display(), e),
+            }
+        }
+    }
+    
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("Rust Git Client")
         .version("0.1.0")
@@ -54,19 +84,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 
                 if path.to_str() == Some(".") {
                     // Handle adding all files in current directory
-                    for entry in fs::read_dir(".")? {
-                        let entry = entry?;
-                        let path = entry.path();
-                        // Skip .git directory and hidden files
-                        if path.is_file() && !path.to_str().unwrap_or("").contains("/.git/") {
-                            // Strip the leading ./ if present
-                            let clean_path = path.strip_prefix("./").unwrap_or(&path);
-                            match index.add_path(clean_path) {
-                                Ok(_) => println!("Added file: {}", clean_path.display()),
-                                Err(e) => eprintln!("Failed to add {}: {}", clean_path.display(), e),
-                            }
-                        }
-                    }
+                    add_directory_recursively(".", &mut index)?;
                 } else {
                     // Handle specific file paths
                     let clean_path = path.strip_prefix("./").unwrap_or(path);
