@@ -59,6 +59,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .num_args(1..)
                 )
         )
+        .subcommand(
+            Command::new("commit")
+                .about("Commit staged changes")
+                .arg(
+                    Arg::new("message")
+                        .short('m')
+                        .long("message")
+                        .help("Commit message")
+                        .required(true)
+                )
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -94,10 +105,47 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            
+
             index.write()?;
         }
-        _ => {}
+        Some(("commit", commit_matches)) => {
+            let repo = Repository::open(".")?;
+            let message = commit_matches.get_one::<String>("message").unwrap();
+            
+            // Get the index and write it to a tree
+            let mut index = repo.index()?;
+            let tree_id = index.write_tree()?;
+            let tree = repo.find_tree(tree_id)?;
+            
+            // Get signature for the commit
+            let signature = repo.signature()?;
+            
+            // Get the parent commit (HEAD)
+            let parent_commit = match repo.head() {
+                Ok(head) => Some(head.peel_to_commit()?),
+                Err(_) => None, // Handle initial commit (no parent)
+            };
+            
+            let parents = match &parent_commit {
+                Some(commit) => vec![commit],
+                None => Vec::new(),
+            };
+
+            // Create the commit
+            let commit_id = repo.commit(
+                Some("HEAD"),      // Reference to update
+                &signature,        // Author
+                &signature,        // Committer
+                message,           // Message
+                &tree,             // Tree
+                &parents,          // Parents
+            )?;
+            
+            println!("Created commit: {}", commit_id);
+        }
+        _ => {
+            println!("Please specify a valid subcommand. Run with --help for usage information.");
+        }
     }
 
     Ok(())
