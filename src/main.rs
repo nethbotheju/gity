@@ -1,8 +1,10 @@
-use clap::{Command, Arg};
-use git2::Repository;
+use clap::{Arg, Command};
+use git2::{Cred, Error as GitError, PushOptions, RemoteCallbacks, Repository};
+use rpassword;
 use std::error::Error;
-use std::path::Path;
 use std::fs;
+use std::io::{self, Write};
+use std::path::Path;
 
 fn add_directory_recursively(dir_path: &str, index: &mut git2::Index) -> Result<(), Box<dyn Error>> {
     let path = Path::new(dir_path);
@@ -19,10 +21,8 @@ fn add_directory_recursively(dir_path: &str, index: &mut git2::Index) -> Result<
         }
         
         if path.is_dir() {
-            // Recursively add files from subdirectory
             add_directory_recursively(path_str, index)?;
         } else if path.is_file() {
-            // Strip the leading ./ if present
             let clean_path = path.strip_prefix("./").unwrap_or(&path);
             match index.add_path(clean_path) {
                 Ok(_) => println!("Added file: {}", clean_path.display()),
@@ -46,8 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Arg::new("path")
                         .help("Directory to initialize (defaults to current directory)")
                         .default_value(".")
-                        .required(false)
-                )
+                        .required(false),
+                ),
         )
         .subcommand(
             Command::new("add")
@@ -56,8 +56,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Arg::new("path")
                         .help("Files to add to the index")
                         .required(true)
-                        .num_args(1..)
-                )
+                        .num_args(1..),
+                ),
         )
         .subcommand(
             Command::new("commit")
@@ -67,8 +67,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .short('m')
                         .long("message")
                         .help("Commit message")
-                        .required(true)
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("push")
+                .about("Push commits to remote repository")
+                .arg(
+                    Arg::new("remote")
+                        .help("Remote repository to push to")
+                        .default_value("origin")
+                        .required(false),
                 )
+                .arg(
+                    Arg::new("branch")
+                        .help("Branch to push")
+                        .default_value("main")
+                        .required(false),
+                ),
         )
         .get_matches();
 
@@ -84,7 +100,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Some(("add", add_matches)) => {
             let repo = Repository::open(".")?;
-            let paths = add_matches.get_many::<String>("path")
+            let paths = add_matches
+                .get_many::<String>("path")
                 .unwrap()
                 .collect::<Vec<_>>();
 
@@ -93,11 +110,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             for path_str in paths {
                 let path = Path::new(path_str);
                 
-                if path.to_str() == Some(".") {
-                    // Handle adding all files in current directory
-                    add_directory_recursively(".", &mut index)?;
+                if path.is_dir() {
+                    add_directory_recursively(path_str, &mut index)?;
                 } else {
-                    // Handle specific file paths
                     let clean_path = path.strip_prefix("./").unwrap_or(path);
                     match index.add_path(clean_path) {
                         Ok(_) => println!("Added file: {}", clean_path.display()),
@@ -112,18 +127,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             let repo = Repository::open(".")?;
             let message = commit_matches.get_one::<String>("message").unwrap();
             
-            // Get the index and write it to a tree
             let mut index = repo.index()?;
             let tree_id = index.write_tree()?;
             let tree = repo.find_tree(tree_id)?;
             
-            // Get signature for the commit
             let signature = repo.signature()?;
             
-            // Get the parent commit (HEAD)
             let parent_commit = match repo.head() {
                 Ok(head) => Some(head.peel_to_commit()?),
-                Err(_) => None, // Handle initial commit (no parent)
+                Err(_) => None,
             };
             
             let parents = match &parent_commit {
@@ -131,17 +143,50 @@ fn main() -> Result<(), Box<dyn Error>> {
                 None => Vec::new(),
             };
 
-            // Create the commit
             let commit_id = repo.commit(
-                Some("HEAD"),      // Reference to update
-                &signature,        // Author
-                &signature,        // Committer
-                message,           // Message
-                &tree,             // Tree
-                &parents,          // Parents
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parents,
             )?;
             
             println!("Created commit: {}", commit_id);
+        }
+        Some(("push", push_matches)) => {
+            let repo = Repository::open(".")?;
+            let remote_name = push_matches.get_one::<String>("remote").unwrap();
+            let branch = push_matches.get_one::<String>("branch").unwrap();
+            let mut remote = repo.find_remote(remote_name)?;
+
+            let mut callbacks = RemoteCallbacks::new();
+            callbacks.credentials(|url, username, allowed| {
+                if allowed.contains(git2::CredentialType::SSH_KEY) {
+                    Cred::ssh_key_from_agent(username.unwrap_or("git"))
+                } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                    
+                    print!("Username for {}: ", url);
+                    io::stdout().flush().map_err(|e| GitError::from_str(&e.to_string()))?;
+                    let mut user_input = String::new();
+                    io::stdin()
+                        .read_line(&mut user_input)
+                        .map_err(|e| GitError::from_str(&e.to_string()))?;
+                    let user = user_input.trim();
+                    let pass = rpassword::prompt_password("Password: ")
+                        .map_err(|e| GitError::from_str(&e.to_string()))?;
+                    Cred::userpass_plaintext(user, &pass)
+                } else {
+                    Err(GitError::from_str("Authentication not supported"))
+                }
+            });
+
+            let mut push_options = PushOptions::new();
+            push_options.remote_callbacks(callbacks);
+
+            let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+            remote.push(&[&refspec], Some(&mut push_options))?;
+            println!("Successfully pushed to {}/{}", remote_name, branch);
         }
         _ => {
             println!("Please specify a valid subcommand. Run with --help for usage information.");
