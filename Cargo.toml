@@ -1,7 +1,8 @@
 [package]
-name = "git-cli-client"
+name = "gity"
 version = "0.1.0"
 edition = "2024"
+authors = ["Neth Botheju <nethbotheju@gmail.com>"]
 
 [dependencies]
 clap = "4.4.18"  

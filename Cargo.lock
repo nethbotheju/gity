@@ -123,15 +123,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-cli-client"
-version = "0.1.0"
-dependencies = [
- "clap",
- "git2",
- "rpassword",
-]
-
-[[package]]
 name = "git2"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -144,6 +135,15 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "url",
+]
+
+[[package]]
+name = "gity"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "git2",
+ "rpassword",
 ]
 
 [[package]]
