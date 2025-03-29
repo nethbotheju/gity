@@ -1,38 +1,9 @@
 use clap::{Arg, Command};
-use git2::{Cred, Error as GitError, PushOptions, RemoteCallbacks, Repository};
+use git2::{Cred, Error as GitError, PushOptions, RemoteCallbacks, Repository, StatusOptions, Status};
 use rpassword;
 use std::error::Error;
-use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-
-fn add_directory_recursively(dir_path: &str, index: &mut git2::Index) -> Result<(), Box<dyn Error>> {
-    let path = Path::new(dir_path);
-    
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-        
-        // Skip .git directory and hidden files/directories
-        let path_str = path.to_str().unwrap_or("");
-        if path_str.contains("/.git/") || path_str.contains("\\.git\\") || 
-           path.file_name().and_then(|s| s.to_str()).map_or(false, |s| s.starts_with(".")) {
-            continue;
-        }
-        
-        if path.is_dir() {
-            add_directory_recursively(path_str, index)?;
-        } else if path.is_file() {
-            let clean_path = path.strip_prefix("./").unwrap_or(&path);
-            match index.add_path(clean_path) {
-                Ok(_) => println!("Added file: {}", clean_path.display()),
-                Err(e) => eprintln!("Failed to add {}: {}", clean_path.display(), e),
-            }
-        }
-    }
-    
-    Ok(())
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = Command::new("Rust Git Client")
@@ -99,29 +70,46 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         Some(("add", add_matches)) => {
-            let repo = Repository::open(".")?;
-            let paths = add_matches
-                .get_many::<String>("path")
-                .unwrap()
-                .collect::<Vec<_>>();
-
-            let mut index = repo.index()?;
+            if let Some(paths) = add_matches.get_many::<String>("path") {
+                if paths.clone().collect::<Vec<_>>() == vec!["."] {
+                    let repo = Repository::open(".")?;
+                    let mut index = repo.index()?;
             
-            for path_str in paths {
-                let path = Path::new(path_str);
-                
-                if path.is_dir() {
-                    add_directory_recursively(path_str, &mut index)?;
-                } else {
-                    let clean_path = path.strip_prefix("./").unwrap_or(path);
-                    match index.add_path(clean_path) {
-                        Ok(_) => println!("Added file: {}", clean_path.display()),
-                        Err(e) => eprintln!("Failed to add {}: {}", clean_path.display(), e),
+                    let mut opts = StatusOptions::new();
+                    opts.include_untracked(true)
+                        .include_ignored(false)
+                        .recurse_untracked_dirs(true);
+            
+                    let statuses = repo.statuses(Some(&mut opts))?;
+            
+                    for entry in statuses.iter() {
+                        if let Some(path) = entry.path() {
+                            let status = entry.status();
+                            let path = Path::new(path);
+            
+                            match status {
+                                s if s.contains(Status::WT_MODIFIED) || s.contains(Status::WT_NEW) => {
+                                    if path.is_dir() {
+                                        index.add_all([path], git2::IndexAddOption::CHECK_PATHSPEC, None)
+                                            .expect("Error when adding directories");
+                                    } else {
+                                        index.add_path(path)?;
+                                    }
+                                    println!("Staged: {}", path.display());
+                                }
+                                s if s.contains(Status::WT_DELETED) => {
+                                    index.remove_path(path)?;
+                                    println!("Removed: {}", path.display());
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+            
+                    index.write()?;
                 }
             }
-
-            index.write()?;
+            
         }
         Some(("commit", commit_matches)) => {
             let repo = Repository::open(".")?;
